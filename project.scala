@@ -6,3 +6,5 @@
 //> using dep io.circe::circe-generic:0.14.6
 //> using dep com.lihaoyi::os-lib:0.9.1
 //> using dep com.nimbusds:nimbus-jose-jwt:9.31
+//> using dep org.bouncycastle:bcprov-jdk15on:1.70
+//> using dep org.bouncycastle:bcpkix-jdk15on:1.70

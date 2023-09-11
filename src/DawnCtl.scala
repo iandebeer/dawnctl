@@ -8,6 +8,7 @@ import com.monovore.decline.effect.*
 import io.circe.*
 import io.circe.parser.*
 import io.circe.syntax.*
+import io.circe.Encoder.encodeUnit
 import io.circe.generic.semiauto.*
 import io.circe.Encoder.encodeJsonObject
 
@@ -17,7 +18,9 @@ import fs2.*
 import scala.util.Try
 import fs2.concurrent.Channel
 import java.net.URI
-
+import org.http4s.CacheDirective.public
+import java.security.interfaces.RSAPublicKey
+import cats.effect.unsafe.implicits.global
 
 object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your DWN Context") : 
   enum ChannelType(agent: URI):
@@ -50,23 +53,51 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
   given Encoder[Channels] = deriveEncoder[Channels]
   given Decoder[Channels] = deriveDecoder[Channels]
  // case class Context(did: String)
-  case class ContextEntry(did: String, alias: Option[String] = None, keyStorePath: Option[String] = None, keyStorePassword: Option[String] = None, publicKey: Option[String] = None)
+  case class ContextEntry(did: String, keyStorePath: Option[String] = None, keyStorePassword: Option[String] = None, publicKey: Option[String] = None)
 
   given Encoder[ContextEntry] = deriveEncoder[ContextEntry]
   given Decoder[ContextEntry] = deriveDecoder[ContextEntry]
 
-  case class ContextFile(entries:Map[String,ContextEntry])
+  case class ContextEntries(entries:Map[String,ContextEntry])
 
-  given Encoder[ContextFile] = deriveEncoder[ContextFile]
-  given Decoder[ContextFile] = deriveDecoder[ContextFile]
+  given Encoder[ContextEntries] = deriveEncoder[ContextEntries]
+  given Decoder[ContextEntries] = deriveDecoder[ContextEntries]
 
 
   val prompt = ">> "
   val exitCommand = "exit"
-  def generateDid(): Either[Throwable,String] = {
+  
+  def generateDid(alias: String): IO[Either[Throwable, String]] = {
+    val keyStore = if (os.exists(keyStorePath)) {
+      println(s"Keystore already exists at $keyStorePath")
+      Crypto.loadKeyStore("password", keyStorePath.toString()).unsafeRunSync()
+    } else {
+      println(s"Creating keystore at $keyStorePath")
+      Crypto.createKeyStore("password", keyStorePath.toString()).unsafeRunSync()
+    }
     // Replace with your logic to generate the DID
-    Right("did:dwn:123456789abcdefghi")
+    val pk: IO[Either[Throwable, RSAPublicKey]] = for 
+      keyPair <- Crypto.createKeyPair()
+      certificate <- Crypto.createSelfSignedCertificate(keyPair, alias)
+      _ <- IO.println(s"Certificate: ${certificate}")
+      _ <- Crypto.storeCertificate(keyStore, certificate, alias, "password".toArray[Char])
+      _ <- Crypto.storePrivateKey(keyStore, keyPair, alias, "password")
+      privateKey <- Crypto.getPrivateKey(keyStore, alias, "password")
+      publicKey <- keyPair.getPublic() match
+        case pk: RSAPublicKey => IO.pure(Right(pk))
+        case _ => IO.pure(Left(new Exception("Invalid Public Key")))
+    yield publicKey
+    pk.map(k =>
+      k match
+        case Right(pk) => s"did:example:${pk.asRight[Throwable].pure[IO]}".asRight[Throwable]
+        case Left(e) => e.asLeft[String]
+    )
   }
+
+
+   // s"did:example:${pk.asRight[Throwable].pure[IO]}")
+
+  
 
   val helpInformation: String = """
   |Usage: dawnctl [command] [options]
@@ -86,84 +117,119 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
   val userDir = os.home
   val dawnDir = userDir / ".dawn"
   val contextFilePath = dawnDir / "dawn.conf"
-  def readContextFile(name : String): Either[Throwable, ContextFile] = 
-    Try(os.exists(contextFilePath)).toEither.flatMap {
+  val keyStorePath = dawnDir / "keystore.jks"
+  def getContextEntries(name : String): IO[Either[Throwable, ContextEntries]] = 
+    IO.pure(Try(os.exists(contextFilePath)).toEither.flatMap {
           case true => 
             //read the content of the file and parse the json to case class ContextFile 
-            val contextFileContent = Right(os.read(contextFilePath))
+            val contextEntries = Right(os.read(contextFilePath))
             for 
-              content <- contextFileContent
+              content <- contextEntries
               json <- parse(content)
-              cf <- json.as[ContextFile]
+              cf <- json.as[ContextEntries]
             yield (cf)
           case false => 
             // create a new context file and generate a new did
-              Right(ContextFile(Map()))
-             // _ <- Try(os.write(contextFilePath,ncf.asJson.spaces2,createFolders = true)).toEither
-           
-        }
-  def updateContextFileWithDid(name : String, cf: ContextFile): Either[Throwable, (ContextFile,String)] = 
+            for 
+              ncf <- Right(ContextEntries(Map()))
+              _ <- Try(os.write(contextFilePath,ncf.asJson.spaces2,createFolders = true)).toEither
+            yield ncf
+        })
+  def updateContextEntries(name : String, cf: ContextEntries): IO[(Either[Throwable, (ContextEntries, String)])] = 
     for    
       // check if the context name already exists and return the did or generate a new did
       did <- cf.entries.get(name) match {
         case Some(entry) => 
           println(s"Context for $name has already been initialized - ignore")   //Right(entry.did)
-          entry.did.asRight
-        case None => generateDid()
+          IO.pure(Right(entry.did))
+        case None => generateDid(name).attempt.map {
+          case Right(did) => {
+            println(s"Context for $name has been initialized with DID: ${did}")
+            did
+          }
+          case Left(e) => Left(e)
+        }
       }
-      ncf = cf.copy(entries = cf.entries + (name -> ContextEntry(did)))
-      _ <- Try(os.write.over(contextFilePath,ncf.asJson.spaces2,createFolders = true)).toEither
-    yield (ncf,did)
+    
+      nce <- IO.pure(did match {
+        case Right(did) => 
+          // update the context file with the new did
+          Right(cf.copy(entries = cf.entries + (name -> ContextEntry(did))))
+        case Left(e) => Left(e)
+      })
+      result <- IO.pure(nce.flatMap { ce =>
+         did.map { d =>(ce, d) }
+        }) 
+    yield result
           
         
   val initCommand: Command[Unit] = Command("init", "Initialize your DWN Context. A DID generated by the DWN Network will be stored in the Context file <$user.home/.dawn/dawn.conf>") {
     val contextName = Opts.option[String]("context-name", "Context Name").withDefault(user)
     (contextName).map { arg => {
       // Check if the context file already exists
-        readContextFile(arg) match {
-          case Right(cf) =>
-            for 
-              contextFile_Did <- updateContextFileWithDid(arg,cf)
-              _ <- Try(os.write.over(contextFilePath,contextFile_Did._1.asJson.spaces2)).toEither
+      (for
+        contextEntries<- getContextEntries(arg) 
+        cf = contextEntries match
+          case Right(ce) => ce
+          case Left(e) => ContextEntries(Map())
+        contextFile_Did <- updateContextEntries(arg,cf)
+        ncf = contextFile_Did match
+          case Right((c,_)) => c
+          case Left(e) => ContextEntries(Map())
+        d = contextFile_Did match
+          case Right((_,did)) => did
+          case Left(e) => generateDid(arg)
+           // case Right(did) => did
+            /* case Right(did) => did match
+              case Right(did) => did
+              case Left(e) => e
+            case Left(e) => e */
+          //}
+        _ <- IO(Try(os.write.over(contextFilePath,ncf.asJson.spaces2)).toEither)
+        _ <- IO.println(s"Your DWN Context has been initialized for $arg with DID: ${d}")
 
-            yield println(s"Your DWN Context has been initialized for $arg with DID: ${contextFile_Did._2}")
-          case Left(e) =>
-            println(s"An error occurred while initializing your DWN Context: $e")
-        }
+      yield ()).unsafeRunSync()
+      
       }
     }
   }
+  
   
 
   val deleteCommand = Command("delete", "Delete your DWN Context for a given context name") {
     val contextName = Opts.option[String]("context-name", "Context Name").withDefault(user)
     (contextName).map { arg =>
+      for 
+        // read the context file
+        contextFile <- getContextEntries(arg)
+        cf = contextFile match
+          case Right(cf) => cf
+          case Left(e) => ContextEntries(Map())
       // delete the entry dron the config file matching the context name
-      readContextFile(arg) match {
-        case Right(cf) =>
-          val ncf = cf.copy(entries = cf.entries - arg)
-          Try(os.write.over(contextFilePath,ncf.asJson.spaces2)).toEither
-          println(s"Your DWN Context has been deleted for $arg")
-        case Left(e) =>
-          println(s"An error occurred while deleting your DWN Context: $e")
-      }
+        ncf = cf.copy(entries = cf.entries - arg)
+        _ <- IO.pure(Try(os.write.over(contextFilePath,ncf.asJson.spaces2)).toEither)
+      yield ()
+      println(s"Your DWN Context for $arg has been deleted")
     }
   }
 
   val getCommand = Command("get", "Get context for a given context name") {
     val contextName = Opts.option[String]("context-name", "Context Name").withDefault(user)
     val outputPath = Opts.option[String]("output-path", "Output Path").withDefault(user)
-
     (contextName).map { arg =>
-       readContextFile(arg) match {
-        case Right(cf) =>
-          cf.entries.get(arg) match {
-            case Some(entry) => println(s"Your DWN Context for $arg is ${entry.did}")
-            case None => println(s"Your DWN Context for $arg is not initialized")
+      val did = for 
+        // read the context file
+        contextFile <- getContextEntries(arg)
+        cf = contextFile match
+          case Right(cf) => cf
+          case Left(e) => ContextEntries(Map())
+        d = cf.entries.get(arg) match {
+            case Some(entry) => s"Your DWN Context for $arg is ${entry.did}"
+            case None => s"Your DWN Context for $arg is not initialized"
           }
-        case Left(e) =>
-          println(s"An error occurred while getting your DWN Context: $e")
-      }
+      yield (d)
+      println(did)
+
     }
   }
 
@@ -177,13 +243,9 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
   
   def main: Opts[IO[ExitCode]] = {
     val helpFlag = Opts.flag("help", "Show help information").orFalse
-    val command: Opts[Unit] = Opts.subcommand(initCommand) orElse Opts.subcommand(deleteCommand) orElse Opts.subcommand(getCommand) orElse Opts.subcommand(relayCommand)
-    (command, helpFlag).mapN { (cmd, help) =>
-      if (cmd == () && !help) {
-        cmd
-      } else {
-        println(helpInformation)
-      }
-    }.as(IO.pure(ExitCode.Success))
+    val command: Opts[Unit] = Opts.subcommand(initCommand) orElse Opts.subcommand(deleteCommand) orElse Opts.subcommand(getCommand) orElse Opts.subcommand(relayCommand) 
+    (command,helpFlag).mapN{
+      case ((),true) => IO(println(helpInformation)).as(ExitCode.Success)
+      case ((),false) => IO(println("Success")).as(ExitCode.Success)
+    }
   }
-  
