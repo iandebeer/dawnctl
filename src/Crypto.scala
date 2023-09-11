@@ -31,6 +31,13 @@ import org.bouncycastle.cert.X509v3CertificateBuilder
 import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo
 import java.io.FileInputStream
 import java.security.spec.RSAPublicKeySpec
+import java.security.Security
+import org.bouncycastle.jce.provider.BouncyCastleProvider
+import net.i2p.crypto.eddsa.spec.EdDSAPublicKeySpec
+import net.i2p.crypto.eddsa.EdDSAPublicKey
+import net.i2p.crypto.eddsa.spec.EdDSANamedCurveTable
+import java.security.KeyFactory
+
 
 
 
@@ -58,14 +65,20 @@ object Crypto:
 
     // create a pki key pair using nimbus-jose-jwt library 
     def createKeyPair(): IO[KeyPair] = IO.pure {
-        val keyPairGenerator = KeyPairGenerator.getInstance("RSA")
+      /*   val keyPairGenerator = KeyPairGenerator.getInstance("RSA")
+        keyPairGenerator.initialize(2048)
+        keyPairGenerator.generateKeyPair() */
+      Security.addProvider(new BouncyCastleProvider())
+      val keyPairGenerator = KeyPairGenerator.getInstance("Ed25519", "BC")
         keyPairGenerator.initialize(2048)
         keyPairGenerator.generateKeyPair()
     }
    
     // store the private key keystore
-    def storePrivateKey(keyStore: KeyStore, keyPair: KeyPair, alias: String, password: String): IO[Unit] = IO.pure {
-        keyStore.setKeyEntry(alias, keyPair.getPrivate(), password.toCharArray(), null)
+    def storePrivateKey(keyStore: KeyStore, keyPair: KeyPair, alias: String, password: String, certificate: X509Certificate): IO[Unit] = IO.pure {
+       // keyStore.setKeyEntry(alias, keyPair.getPrivate(), password.toCharArray(), null)
+       val certificateChain = Array[java.security.cert.Certificate](certificate)
+       keyStore.setKeyEntry(alias, keyPair.getPrivate(), password.toCharArray(), certificateChain)
     }
 
 
@@ -93,19 +106,16 @@ object Crypto:
         val serialNumber = BigInteger.valueOf(System.currentTimeMillis())
         val notBefore = new Date(System.currentTimeMillis() - 24 * 60 * 60 * 1000) // 1 day ago
         val notAfter = new Date(System.currentTimeMillis() + 365 * 24 * 60 * 60 * 1000) // 1 year from now
-        val pubKey = org.bouncycastle.asn1.pkcs.RSAPublicKey.getInstance(keyPair.getPublic())
-        val modulus = pubKey.getModulus()
-        val exponent = pubKey.getPublicExponent()
-        val keySpec = new RSAPublicKeySpec(modulus, exponent)
-        val keyFactory = java.security.KeyFactory.getInstance("RSA")
-        val publicKey = keyFactory.generatePublic(keySpec)
-        val publicKeyInfo = org.bouncycastle.asn1.x509.SubjectPublicKeyInfo.getInstance(publicKey.getEncoded)   
-        
+        val publicKey = keyPair.getPublic()
+        val publicKeySpec = new EdDSAPublicKeySpec(publicKey.asInstanceOf[EdDSAPublicKey].getAbyte(), EdDSANamedCurveTable.getByName("Ed25519"))        
+        val keyFactory = KeyFactory.getInstance("EdDSA")
+        val publicKeyInfo = SubjectPublicKeyInfo.getInstance(keyFactory.generatePublic(publicKeySpec).getEncoded())
         val certBuilder = new X509v3CertificateBuilder(issuer, serialNumber, notBefore, notAfter, subject, publicKeyInfo)
-        val contentSigner = JcaContentSignerBuilder("SHA256WithRSA").build(keyPair.getPrivate())
+        val contentSigner = new JcaContentSignerBuilder("SHA256withEdDSA").build(keyPair.getPrivate())
         val certHolder = certBuilder.build(contentSigner)
-        val certConverter = JcaX509CertificateConverter()
+        val certConverter = new JcaX509CertificateConverter()
         certConverter.getCertificate(certHolder)
+        
     }
 
     def storeCertificate(keyStore: KeyStore, certificate: X509Certificate, alias: String, password: Array[Char]): IO[Unit] = {

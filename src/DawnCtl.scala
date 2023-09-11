@@ -21,6 +21,7 @@ import java.net.URI
 import org.http4s.CacheDirective.public
 import java.security.interfaces.RSAPublicKey
 import cats.effect.unsafe.implicits.global
+import java.util.Base64
 
 object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your DWN Context") : 
   enum ChannelType(agent: URI):
@@ -53,7 +54,7 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
   given Encoder[Channels] = deriveEncoder[Channels]
   given Decoder[Channels] = deriveDecoder[Channels]
  // case class Context(did: String)
-  case class ContextEntry(did: String, keyStorePath: Option[String] = None, keyStorePassword: Option[String] = None, publicKey: Option[String] = None)
+  case class ContextEntry(did: String, keyStorePath: Option[String] = None, publicKey: Option[String] = None)
 
   given Encoder[ContextEntry] = deriveEncoder[ContextEntry]
   given Decoder[ContextEntry] = deriveDecoder[ContextEntry]
@@ -78,20 +79,39 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
     // Replace with your logic to generate the DID
     val pk: IO[Either[Throwable, RSAPublicKey]] = for 
       keyPair <- Crypto.createKeyPair()
+      _ <- IO.println(s"KeyPair: ${keyPair}")
       certificate <- Crypto.createSelfSignedCertificate(keyPair, alias)
       _ <- IO.println(s"Certificate: ${certificate}")
       _ <- Crypto.storeCertificate(keyStore, certificate, alias, "password".toArray[Char])
-      _ <- Crypto.storePrivateKey(keyStore, keyPair, alias, "password")
+      _ <- Crypto.storePrivateKey(keyStore, keyPair, alias, "password", certificate)
       privateKey <- Crypto.getPrivateKey(keyStore, alias, "password")
       publicKey <- keyPair.getPublic() match
         case pk: RSAPublicKey => IO.pure(Right(pk))
         case _ => IO.pure(Left(new Exception("Invalid Public Key")))
     yield publicKey
-    pk.map(k =>
-      k match
-        case Right(pk) => s"did:example:${pk.asRight[Throwable].pure[IO]}".asRight[Throwable]
-        case Left(e) => e.asLeft[String]
-    )
+    pk.unsafeRunSync() match
+      case Left(e) => Left(e).pure[IO]
+      case Right(pk) => s"did:example:${Base64.getEncoder.encodeToString(pk.getEncoded())}".asRight[Throwable].pure[IO]
+    
+  }
+
+  def fetchDID(alias:String): IO[Either[Throwable, String]] = {
+
+    val keyStore = if (os.exists(keyStorePath)) {
+      println(s"Keystore already exists at $keyStorePath")
+      Crypto.loadKeyStore("password", keyStorePath.toString()).unsafeRunSync()
+    } else {
+      println(s"Creating keystore at $keyStorePath")
+      Crypto.createKeyStore("password", keyStorePath.toString()).unsafeRunSync()
+    }
+    // read certificate from keystore
+    val certificate = keyStore.getCertificate(alias)
+    // get the public key from the certificate
+    val publicKey = certificate.getPublicKey() match
+      case pk: RSAPublicKey => pk
+      case _ => throw new Exception("Invalid Public Key")
+    // return the did
+    s"did:example:${Base64.getEncoder.encodeToString(publicKey.getEncoded())}".asRight[Throwable].pure[IO]
   }
 
 
@@ -154,7 +174,8 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
       nce <- IO.pure(did match {
         case Right(did) => 
           // update the context file with the new did
-          Right(cf.copy(entries = cf.entries + (name -> ContextEntry(did))))
+          val pubKey = did.split(":").last
+          Right(cf.copy(entries = cf.entries + (name -> ContextEntry(did, Some(keyStorePath.toString()),Some(pubKey)))))
         case Left(e) => Left(e)
       })
       result <- IO.pure(nce.flatMap { ce =>
@@ -178,7 +199,7 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
           case Left(e) => ContextEntries(Map())
         d = contextFile_Did match
           case Right((_,did)) => did
-          case Left(e) => generateDid(arg)
+          case Left(e) => fetchDID(arg)
            // case Right(did) => did
             /* case Right(did) => did match
               case Right(did) => did
