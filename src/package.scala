@@ -75,6 +75,6 @@ package object didx:
 
   val user            = System.getProperty("user.name")
   val userDir         = os.home
-  val dawnDir         = userDir / ".dawn"
+  val dawnDir         = userDir / ".config" / "dawn"
   val contextFilePath = dawnDir / "dawn.conf"
   val keyStorePath    = dawnDir / "keystore.jks"
