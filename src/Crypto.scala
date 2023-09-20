@@ -92,8 +92,8 @@ object Crypto:
   def saveToJWKSet(jwk: ECKey, keystorePath: os.Path): IO[Unit] = IO.pure {
     val keystoreFile         = keystorePath.toIO
     val keystoreOutputStream = new java.io.FileOutputStream(keystoreFile)
-    //val json                 = new JWKSet(jwk).toJSONObject()
-    val pubJson                = new JWKSet(jwk).toPublicJWKSet()
+    // val json                 = new JWKSet(jwk).toJSONObject()
+    val pubJson              = new JWKSet(jwk).toPublicJWKSet()
     keystoreOutputStream.write(pubJson.toString().getBytes())
     keystoreOutputStream.close()
   }
@@ -119,8 +119,7 @@ object Crypto:
     for
       keyStore   <- getKeyStore(password, keyStorePath)
       privateKey <- IO.pure(keyStore.getKey(alias, password.toCharArray()))
-      ecKey <- IO.pure(privateKey.asInstanceOf[ECPrivateKey])
-      
+      ecKey      <- IO.pure(privateKey.asInstanceOf[ECPrivateKey])
     yield ecKey
 
   // get the private key from keystore
@@ -131,7 +130,7 @@ object Crypto:
   }
 
   // encrypt the message using nimbus-jose-jwt library and return the encrypted message as base64 string
-   def encryptMessage(message: String, publicKey: ECPublicKey): IO[String] = IO.pure {
+  def encryptMessage(message: String, publicKey: ECPublicKey): IO[String] = IO.pure {
     val jweObject = new JWEObject(
       new JWEHeader.Builder(JWEAlgorithm.ECDH_ES_A256KW, com.nimbusds.jose.EncryptionMethod.A256GCM)
         .keyID(publicKey.toString())
@@ -140,15 +139,14 @@ object Crypto:
     )
     jweObject.encrypt(new ECDHEncrypter(publicKey))
     jweObject.serialize()
-  } 
+  }
 
-    // decrypt the message using nimbus-jose-jwt library and return the encrypted message as base64 string
+  // decrypt the message using nimbus-jose-jwt library and return the encrypted message as base64 string
   def decryptMessage(message: String, privateKey: ECPrivateKey): IO[String] = IO.pure {
     val jweObject = JWEObject.parse(message)
     jweObject.decrypt(new ECDHDecrypter(privateKey))
     jweObject.getPayload().toString()
   }
-
 
   def createSelfSignedCertificate(alias: String): IO[X509Certificate] = IO.pure {
     Security.addProvider(new BouncyCastleProvider())

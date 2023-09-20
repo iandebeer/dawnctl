@@ -1,7 +1,6 @@
 package xyz.didx
 
 import cats.effect.IO
-import xyz.didx.DawnCtl.ContextEntries
 import os.*
 import cats.effect.IO
 import DawnCtl.*
@@ -12,8 +11,32 @@ import io.circe.Json
 import java.security.interfaces.ECPublicKey
 import com.nimbusds.jose.jwk.JWKSet
 import com.nimbusds.jose.jwk.ECKey
+import DIDOps.*
 
 object ContextFileOps:
+
+  def getContextEntries(name: String): IO[ContextEntries] =
+    for
+      contextEntries <- readContextEntries(contextFilePath)
+    yield contextEntries
+
+  def updateContextEntries(name: String, cf: ContextEntries): IO[ContextEntry] =
+    for
+      // check if the context name already exists and return the did or generate a new did
+      pubKey       <- getPublicKey(contextFilePath, name)
+      did          <- pubKey match
+                        case Some(pk) => IO.pure((s"did:key:$pk", ""))
+                        case None     => generateDid(name)
+      _            <- IO.println(s"Generated DID: ${did._1}")
+      keypair      <- did._2 match
+                        case "" => IO.pure(None)
+                        case _  => IO.pure(
+                            parse(did._2).getOrElse(Json.obj()).as[KeyPairs].getOrElse(KeyPairs(List.empty)).keys.headOption
+                          )
+      contextEntry <-
+        IO.pure(ContextEntry(did._1, Some(keyStorePath.toString()), keypair.map(_.x), keypair))
+    yield contextEntry
+
   // Read Context Entries from a file if exist else create Context Entry file
   def readContextEntries(contextEntriesFile: Path): IO[ContextEntries] = IO.pure {
     if (os.exists(contextEntriesFile))
@@ -23,7 +46,7 @@ object ContextFileOps:
     else
       val contextEntries = Json.obj()
       os.write(contextEntriesFile, contextEntries.toString(), createFolders = true)
-      ContextEntries(contextEntries.as[Map[String, DawnCtl.ContextEntry]].getOrElse(Map.empty))
+      ContextEntries(contextEntries.as[Map[String, ContextEntry]].getOrElse(Map.empty))
   }
   // Update Context Entries by adding a ContextEntry to the map in a file
   def updateContextEntries(
@@ -65,15 +88,16 @@ object ContextFileOps:
   // Get public key for a context entry from a file
   def getPublicKey(contextEntriesFile: Path, name: String): IO[Option[ECPublicKey]] =
     for
-      cef <- readContextEntries(contextEntriesFile)
+      cef      <- readContextEntries(contextEntriesFile)
       keyPairs <- IO.pure(cef.entries.get(name).flatMap(_.keypair).map(kp => KeyPairs(List(kp))))
-      //_ <- IO.println(s"key pairs ${keyPairs.getOrElse(KeyPairs(List.empty))}")
-      pubKey <- IO.pure(keyPairs.map(kp => 
-        val json  = kp.asJson.spaces2
-        println(s"json: $json")
-        val ks = JWKSet.parse(json)
-        ks.toPublicJWKSet().getKeys.get(0).asInstanceOf[ECKey].toECPublicKey))
-      //  ks.getKeys.get(0).asInstanceOf[ECKey].toECPublicKey))
-      // b64key <- IO.pure(cef.entries.get(name).flatMap(_.keyPair).map(_.publicKey))
+      // _ <- IO.println(s"key pairs ${keyPairs.getOrElse(KeyPairs(List.empty))}")
+      pubKey   <- IO.pure(keyPairs.map(kp =>
+                    val json = kp.asJson.spaces2
+                    println(s"json: $json")
+                    val ks   = JWKSet.parse(json)
+                    ks.toPublicJWKSet().getKeys.get(0).asInstanceOf[ECKey].toECPublicKey
+                  ))
+    //  ks.getKeys.get(0).asInstanceOf[ECKey].toECPublicKey))
+    // b64key <- IO.pure(cef.entries.get(name).flatMap(_.keyPair).map(_.publicKey))
     yield pubKey
 // get did for a context entry from a file

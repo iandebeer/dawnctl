@@ -24,101 +24,12 @@ import java.util.Base64
 import java.security.PublicKey
 import ContextFileOps.*
 import Crypto.*
+import DIDOps.*
+
 import org.typelevel.vault.Key
 import com.nimbusds.jose.jwk.JWKSet
 
 object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your DWN Context"):
-  enum ChannelType(agent: URI):
-    case Slack    extends ChannelType(URI("https://slack.com/api/chat.postMessage"))
-    case WhatsApp extends ChannelType(URI("https://api.whatsapp.com/send"))
-    case Signal   extends ChannelType(URI("https://signal.org/api/v1/send"))
-    case Telegram extends ChannelType(URI("https://api.telegram.org/bot"))
-    case Email    extends ChannelType(URI("smtp://smtp.gmail.com:587"))
-    case SMS      extends ChannelType(URI(
-          "https://api.twilio.com/2010-04)-01/Accounts/ACXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX/Messages.json"
-        ))
-    def fromString(s: String): Either[Throwable, ChannelType] =
-      s match
-        case "slack"    => Right(Slack)
-        case "whatsapp" => Right(WhatsApp)
-        case "signal"   => Right(Signal)
-        case "telegram" => Right(Telegram)
-        case "email"    => Right(Email)
-        case "sms"      => Right(SMS)
-        case _          => Left(new Exception("Invalid Channel Type"))
-    override def toString(): String                           =
-      this match
-        case Slack    => "slack"
-        case WhatsApp => "whatsapp"
-        case Signal   => "signal"
-        case Telegram => "telegram"
-        case Email    => "email"
-        case SMS      => "sms"
-
-  case class Channels(channel: String, channelDid: String)
-  given Encoder[Channels] = deriveEncoder[Channels]
-  given Decoder[Channels] = deriveDecoder[Channels]
-  // case class Context(did: String)
-// {"keys": [{"kty": "EC", "crv": "P-384", "kid": "iandebeer", "x": "jIff9TONJuD1n89zb9UT1a_bzMB1NUbS5_weYEtmAN2joF_N6mM-TQoTBaXa8Qib", "y": "(redacted)"}]}
-  case class KeyPair(
-    kty: String,
-    crv: String,
-    kid: String,
-    x: String,
-    y: String
-  )
-
-  given Encoder[KeyPair] = deriveEncoder[KeyPair]
-  given Decoder[KeyPair] = deriveDecoder[KeyPair]
-
-  case class KeyPairs(keys: List[KeyPair])
-
-  given Encoder[KeyPairs] = deriveEncoder[KeyPairs]
-  given Decoder[KeyPairs] = deriveDecoder[KeyPairs]
-  case class ContextEntry(
-    did: String,
-    keyStorePath: Option[String] = None,
-    publicKey: Option[String] = None,
-    keypair: Option[KeyPair] = None
-  )
-
-  given Encoder[ContextEntry] = deriveEncoder[ContextEntry]
-  given Decoder[ContextEntry] = deriveDecoder[ContextEntry]
-
-  case class ContextEntries(entries: Map[String, ContextEntry])
-
-  given Encoder[ContextEntries] = deriveEncoder[ContextEntries]
-  given Decoder[ContextEntries] = deriveDecoder[ContextEntries]
-
-  val prompt      = ">> "
-  val exitCommand = "exit"
-
-  def generateDid(alias: String): IO[(String, String)] =
-    for
-      keyStore    <- getKeyStore("password", keyStorePath)
-      keyPair     <- createKeyPairRSA()
-      certificate <- createSelfSignedCertificate(alias)
-      _           <- storeCertificate(keyStore, certificate, alias, "password".toArray[Char])
-
-      kp <- createKeyPair(alias, keyStorePath)
-      _  <- storePrivateKey(keyStorePath, keyStore, kp, alias, "password", certificate)
-    // _  <- storePublicKey(contextFilePath, alias, kp.getPublic().toString())
-    yield (s"did:key:${kp.computeThumbprint().toString()}", new JWKSet(kp).toPublicJWKSet().toString())
-
-  def fetchDID(alias: String): IO[Either[Throwable, String]] = {
-
-    val keyStore = if (os.exists(keyStorePath)) {
-      println(s"Keystore already exists at $keyStorePath")
-      loadKeyStore("password", keyStorePath.toString()).unsafeRunSync()
-    }
-    else {
-      println(s"Creating keystore at $keyStorePath")
-      createKeyStore("password", keyStorePath.toString()).unsafeRunSync()
-    }
-    getPublicKey(contextFilePath, alias).unsafeRunSync() match
-      case Some(pk) => s"did:key:$pk".asRight[Throwable].pure[IO]
-      case None     => Left(new Exception("Invalid Public Key")).pure[IO]
-  }
 
   val helpInformation: String = """
   |Usage: dawnctl [command] [options]
@@ -134,34 +45,6 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
   |  --help
   |    This help information
   """
-
-  val user            = System.getProperty("user.name")
-  val userDir         = os.home
-  val dawnDir         = userDir / ".dawn"
-  val contextFilePath = dawnDir / "dawn.conf"
-  val keyStorePath    = dawnDir / "keystore.jks"
-
-  def getContextEntries(name: String): IO[ContextEntries] =
-    for
-      contextEntries <- readContextEntries(contextFilePath)
-    yield contextEntries
-
-  def updateContextEntries(name: String, cf: ContextEntries): IO[ContextEntry] =
-    for
-      // check if the context name already exists and return the did or generate a new did
-      pubKey       <- getPublicKey(contextFilePath, name)
-      did          <- pubKey match
-                        case Some(pk) => IO.pure((s"did:key:$pk", ""))
-                        case None     => generateDid(name)
-      _            <- IO.println(s"Generated DID: ${did._1}")
-      keypair      <- did._2 match
-                        case "" => IO.pure(None)
-                        case _  => IO.pure(
-                            parse(did._2).getOrElse(Json.obj()).as[KeyPairs].getOrElse(KeyPairs(List.empty)).keys.headOption
-                          )
-      contextEntry <-
-        IO.pure(ContextEntry(did._1, Some(keyStorePath.toString()), keypair.map(_.x), keypair))
-    yield contextEntry
 
   val initCommand: Command[Unit] = Command(
     "init",
@@ -180,15 +63,15 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
 
         _ <- IO.println(s"Your DWN Context has been initialized for $arg with DID: ${ncf.did}")
 
-      /*  yield ()).unsafeRunSync()
+        /*  yield ()).unsafeRunSync()
       (for */
         privateKey <- getPrivateKey(keyStorePath, arg, "password")
-        publicKey <- getPublicKey(contextFilePath, arg)
-        encMsg <- publicKey.map(pk => encryptMessage("Hello World", pk)).getOrElse(IO.pure(""))
-        _ <- IO.println(s"Encrypted Message: $encMsg")
-        decMsg <- decryptMessage(encMsg, privateKey)
-        _ <- IO.println(s"Decrypted Message: $decMsg")
-       
+        publicKey  <- getPublicKey(contextFilePath, arg)
+        encMsg     <- publicKey.map(pk => encryptMessage("Hello World", pk)).getOrElse(IO.pure(""))
+        _          <- IO.println(s"Encrypted Message: $encMsg")
+        decMsg     <- decryptMessage(encMsg, privateKey)
+        _          <- IO.println(s"Decrypted Message: $decMsg")
+
       // _ <- IO.println(s"Your Public: ${getPublicKeyFromBase64(publicKey.getOrElse(""))}")
       yield ()).unsafeRunSync()
     }
