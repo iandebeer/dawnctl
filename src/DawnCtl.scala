@@ -24,6 +24,8 @@ import java.util.Base64
 import java.security.PublicKey
 import ContextFileOps.*
 import Crypto.*
+import org.typelevel.vault.Key
+import com.nimbusds.jose.jwk.JWKSet
 
 object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your DWN Context"):
   enum ChannelType(agent: URI):
@@ -32,7 +34,7 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
     case Signal   extends ChannelType(URI("https://signal.org/api/v1/send"))
     case Telegram extends ChannelType(URI("https://api.telegram.org/bot"))
     case Email    extends ChannelType(URI("smtp://smtp.gmail.com:587"))
-    case SMS extends ChannelType(URI(
+    case SMS      extends ChannelType(URI(
           "https://api.twilio.com/2010-04)-01/Accounts/ACXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX/Messages.json"
         ))
     def fromString(s: String): Either[Throwable, ChannelType] =
@@ -44,7 +46,7 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
         case "email"    => Right(Email)
         case "sms"      => Right(SMS)
         case _          => Left(new Exception("Invalid Channel Type"))
-    override def toString(): String =
+    override def toString(): String                           =
       this match
         case Slack    => "slack"
         case WhatsApp => "whatsapp"
@@ -57,10 +59,27 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
   given Encoder[Channels] = deriveEncoder[Channels]
   given Decoder[Channels] = deriveDecoder[Channels]
   // case class Context(did: String)
+// {"keys": [{"kty": "EC", "crv": "P-384", "kid": "iandebeer", "x": "jIff9TONJuD1n89zb9UT1a_bzMB1NUbS5_weYEtmAN2joF_N6mM-TQoTBaXa8Qib", "y": "(redacted)"}]}
+  case class KeyPair(
+    kty: String,
+    crv: String,
+    kid: String,
+    x: String,
+    y: String
+  )
+
+  given Encoder[KeyPair] = deriveEncoder[KeyPair]
+  given Decoder[KeyPair] = deriveDecoder[KeyPair]
+
+  case class KeyPairs(keys: List[KeyPair])
+
+  given Encoder[KeyPairs] = deriveEncoder[KeyPairs]
+  given Decoder[KeyPairs] = deriveDecoder[KeyPairs]
   case class ContextEntry(
     did: String,
     keyStorePath: Option[String] = None,
-    publicKey: Option[String] = None
+    publicKey: Option[String] = None,
+    keypair: Option[KeyPair] = None
   )
 
   given Encoder[ContextEntry] = deriveEncoder[ContextEntry]
@@ -74,21 +93,17 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
   val prompt      = ">> "
   val exitCommand = "exit"
 
-  def generateDid(alias: String): IO[String] =
-    // Replace with your logic to generate the DID
+  def generateDid(alias: String): IO[(String, String)] =
     for
-      keyStore <- getKeyStore("password", keyStorePath)
-      // keyPair <-  createKeyPairRSA()
-      // _ <- IO.println(s"KeyPair: ${keyPair}")
+      keyStore    <- getKeyStore("password", keyStorePath)
+      keyPair     <- createKeyPairRSA()
       certificate <- createSelfSignedCertificate(alias)
-      _           <- IO.println(s"Certificate: $certificate")
       _           <- storeCertificate(keyStore, certificate, alias, "password".toArray[Char])
 
-      kp <- createKeyPairED25519()
-      _  <- IO.println(s"PublicKey ED25519: ${kp.getPublic().toString}")
+      kp <- createKeyPair(alias, keyStorePath)
       _  <- storePrivateKey(keyStorePath, keyStore, kp, alias, "password", certificate)
-      _  <- storePublicKey(contextFilePath, alias, kp.getPublic().toString())
-    yield s"did:key:${Base64.getEncoder.encodeToString(kp.getPublic().getEncoded)}"
+    // _  <- storePublicKey(contextFilePath, alias, kp.getPublic().toString())
+    yield (s"did:key:${kp.computeThumbprint().toString()}", new JWKSet(kp).toPublicJWKSet().toString())
 
   def fetchDID(alias: String): IO[Either[Throwable, String]] = {
 
@@ -134,12 +149,18 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
   def updateContextEntries(name: String, cf: ContextEntries): IO[ContextEntry] =
     for
       // check if the context name already exists and return the did or generate a new did
-      pubKey <- getPublicKey(contextFilePath, name)
-      did <- pubKey match
-        case Some(pk) => IO.pure(s"did:key:$pk")
-        case None     => generateDid(name)
+      pubKey       <- getPublicKey(contextFilePath, name)
+      did          <- pubKey match
+                        case Some(pk) => IO.pure((s"did:key:$pk", ""))
+                        case None     => generateDid(name)
+      _            <- IO.println(s"Generated DID: ${did._1}")
+      keypair      <- did._2 match
+                        case "" => IO.pure(None)
+                        case _  => IO.pure(
+                            parse(did._2).getOrElse(Json.obj()).as[KeyPairs].getOrElse(KeyPairs(List.empty)).keys.headOption
+                          )
       contextEntry <-
-        IO.pure(ContextEntry(did, Some(keyStorePath.toString()), Some(did.split(":").last)))
+        IO.pure(ContextEntry(did._1, Some(keyStorePath.toString()), keypair.map(_.x), keypair))
     yield contextEntry
 
   val initCommand: Command[Unit] = Command(
@@ -152,26 +173,24 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
       (for
         contextEntries <- getContextEntries(arg)
         ncf            <- updateContextEntries(arg, contextEntries)
-        _ <- IO.pure(os.write.over(
-          contextFilePath,
-          contextEntries.copy(entries = contextEntries.entries + (arg -> ncf)).asJson.spaces2
-        ))
+        _              <- IO.pure(os.write.over(
+                            contextFilePath,
+                            contextEntries.copy(entries = contextEntries.entries + (arg -> ncf)).asJson.spaces2
+                          ))
 
         _ <- IO.println(s"Your DWN Context has been initialized for $arg with DID: ${ncf.did}")
-      // bk = b64Key.get
-      // b64Key <- getPublicKey(contextFilePath, arg)
-      // _ <- IO.println(s"Your encoded Public Key is: ${b64Key.getOrElse("")}")
 
-      // pubKey <- getPublicKeyFromBase64(b64Key.getOrElse(""))
-      // _ <- IO.println(s"Your decoded Public Key is: $pubKey")
-
-      //  _ <- IO.println(s"Your decoded key is: did:key:$")
-      yield ()).unsafeRunSync()
-      /*  (for
+      /*  yield ()).unsafeRunSync()
+      (for */
         privateKey <- getPrivateKey(keyStorePath, arg, "password")
         publicKey <- getPublicKey(contextFilePath, arg)
-        _ <- IO.println(s"Your PK is Private: $privateKey and Public: $publicKey")
-      yield ()).unsafeRunSync() */
+        encMsg <- publicKey.map(pk => encryptMessage("Hello World", pk)).getOrElse(IO.pure(""))
+        _ <- IO.println(s"Encrypted Message: $encMsg")
+        decMsg <- decryptMessage(encMsg, privateKey)
+        _ <- IO.println(s"Decrypted Message: $decMsg")
+       
+      // _ <- IO.println(s"Your Public: ${getPublicKeyFromBase64(publicKey.getOrElse(""))}")
+      yield ()).unsafeRunSync()
     }
   }
 
@@ -182,7 +201,7 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
         contextEntries <- getContextEntries(arg)
         ncf            <- updateContextEntries(arg, ContextEntries(contextEntries.entries - arg))
         _              <- IO.pure(os.write.over(contextFilePath, ncf.asJson.spaces2))
-        _ <- IO.println(s"Your DWN Context has been initialized for $arg with DID: ${ncf.did}")
+        _              <- IO.println(s"Your DWN Context has been initialized for $arg with DID: ${ncf.did}")
       yield ()).unsafeRunSync()
       println(s"Your DWN Context for $arg has been deleted")
     }
@@ -193,10 +212,10 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
     val outputPath  = Opts.option[String]("output-path", "Output Path").withDefault(user)
     contextName.map { arg =>
       val did = (for
-        contextEntries <- getContextEntries(arg)
-        d <- contextEntries.entries.get(arg) match
-          case Some(ce) => ce.did.asRight[Throwable].pure[IO]
-          case None     => Left(new Exception("Invalid Context Name")).pure[IO]
+        contextEntries <- readContextEntries(contextFilePath)
+        d              <- contextEntries.entries.get(arg) match
+                            case Some(ce) => ce.did.asRight[Throwable].pure[IO]
+                            case None     => Left(new Exception("Invalid Context Name")).pure[IO]
       yield d).unsafeRunSync()
       did match
         case Right(did) => println(s"The DID for context $arg: $did")
@@ -213,7 +232,7 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
   }
 
   def main: Opts[IO[ExitCode]] = {
-    val helpFlag = Opts.flag("help", "Show help information").orFalse
+    val helpFlag            = Opts.flag("help", "Show help information").orFalse
     val command: Opts[Unit] = Opts.subcommand(initCommand) orElse Opts.subcommand(
       deleteCommand
     ) orElse Opts.subcommand(getCommand) orElse Opts.subcommand(relayCommand)
