@@ -10,4 +10,5 @@
 //> using dep com.google.crypto.tink:tink:1.10.0
 //> using dep org.bouncycastle:bcprov-jdk15on:1.70
 //> using dep org.bouncycastle:bcpkix-jdk15on:1.70
+//> using dep com.google.zxing:core:3.5.2
 ///> using dep com.apicatalog:iron-ed25519-cryptosuite-2020:0.8.1

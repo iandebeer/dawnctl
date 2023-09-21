@@ -60,16 +60,15 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
                             contextEntries.copy(entries = contextEntries.entries + (arg -> ncf)).asJson.spaces2
                           ))
 
-        _ <- IO.println(s"Your DWN Context has been initialized for $arg with DID: ${ncf.did}")
-
-        /*  yield ()).unsafeRunSync()
-      (for */
+        _          <- IO.println(s"Your DWN Context has been initialized for $arg with DID: ${ncf.did}")
         privateKey <- getPrivateKey(keyStorePath, arg, "password")
         publicKey  <- getPublicKey(contextFilePath, arg)
         encMsg     <- publicKey.map(pk => encryptMessage("Hello World", pk)).getOrElse(IO.pure(""))
         _          <- IO.println(s"Encrypted Message: $encMsg")
         decMsg     <- decryptMessage(encMsg, privateKey)
         _          <- IO.println(s"Decrypted Message: $decMsg")
+        _          <- generateQRCode(s"${ncf.did}", userDir / "DID_Me" / s"$arg.png")
+
 
       // _ <- IO.println(s"Your Public: ${getPublicKeyFromBase64(publicKey.getOrElse(""))}")
       yield ()
