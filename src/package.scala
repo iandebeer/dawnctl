@@ -9,6 +9,16 @@ import io.circe.generic.semiauto.*
 import io.circe.Encoder.encodeJsonObject
 package object didx:
 
+  val prompt      = ">> "
+  val exitCommand = "exit"
+
+  val user            = System.getProperty("user.name")
+  val userDir         = os.home
+  val dawnDir         = userDir / ".config" / "dawn"
+  val contextFilePath = dawnDir / "dawn.conf"
+  val keyStorePath    = dawnDir / "keystore.jks"
+  val dwnUrl          = "https://dwn.dawn.dev.didxtech.com/dawn.dwn.api.v1.DwnApiService/CreateDwn"
+
   enum ChannelType(agent: URI):
     case Slack    extends ChannelType(URI("https://slack.com/api/chat.postMessage"))
     case WhatsApp extends ChannelType(URI("https://api.whatsapp.com/send"))
@@ -70,11 +80,90 @@ package object didx:
   given Encoder[ContextEntries] = deriveEncoder[ContextEntries]
   given Decoder[ContextEntries] = deriveDecoder[ContextEntries]
 
-  val prompt      = ">> "
-  val exitCommand = "exit"
+  case class DidDetails(
+    didDocument: DidDocument,
+    didDocumentMetadata: DidDocumentMetadata
+  )
 
-  val user            = System.getProperty("user.name")
-  val userDir         = os.home
-  val dawnDir         = userDir / ".config" / "dawn"
-  val contextFilePath = dawnDir / "dawn.conf"
-  val keyStorePath    = dawnDir / "keystore.jks"
+  given Encoder[DidDetails] = deriveEncoder[DidDetails]
+  given Decoder[DidDetails] = deriveDecoder[DidDetails]
+  case class DidDocument(
+    authentication: List[String],
+    id: String,
+    service: List[Service],
+    verificationMethod: List[VerificationMethod]
+  )
+
+  given Encoder[DidDocument] = deriveEncoder[DidDocument]
+  given Decoder[DidDocument] = deriveDecoder[DidDocument]
+
+  case class Service(
+    id: String,
+    serviceEndpoint: ServiceEndpoint,
+    `type`: String
+  )
+
+  given Encoder[Service] = deriveEncoder[Service]
+  given Decoder[Service] = deriveDecoder[Service]
+
+  case class ServiceEndpoint(
+    nodes: List[String]
+  )
+
+  given Encoder[ServiceEndpoint] = deriveEncoder[ServiceEndpoint]
+  given Decoder[ServiceEndpoint] = deriveDecoder[ServiceEndpoint]
+
+  case class VerificationMethod(
+    controller: String,
+    id: String,
+    publicKeyJwk: PublicKeyJwk,
+    `type`: String
+  )
+
+  given Encoder[VerificationMethod] = deriveEncoder[VerificationMethod]
+  given Decoder[VerificationMethod] = deriveDecoder[VerificationMethod]
+
+  case class PublicKeyJwk(
+    crv: String,
+    kty: String,
+    x: String
+  )
+
+  given Encoder[PublicKeyJwk] = deriveEncoder[PublicKeyJwk]
+  given Decoder[PublicKeyJwk] = deriveDecoder[PublicKeyJwk]
+  case class DidDocumentMetadata(
+    equivalentId: List[String],
+    method: Method
+  )
+
+  given Encoder[DidDocumentMetadata] = deriveEncoder[DidDocumentMetadata]
+  given Decoder[DidDocumentMetadata] = deriveDecoder[DidDocumentMetadata]
+  case class Method(
+    recoveryCommitment: String,
+    updateCommitment: String
+  )
+
+  case class Tenant(
+    tenantId: TenantId,
+    userDetails: Map[String, String]
+  )
+
+  given Encoder[Tenant] = deriveEncoder[Tenant]
+  given Decoder[Tenant] = deriveDecoder[Tenant]
+
+  case class TenantId(
+    dwnDid: String,
+    dwnDidEquivalent: String,
+    ownerDid: String
+  )
+
+  given Encoder[TenantId] = deriveEncoder[TenantId]
+  given Decoder[TenantId] = deriveDecoder[TenantId]
+
+  case class Root(
+    didDetails: DidDetails,
+    tenant: Tenant
+  )
+
+  given Encoder[Root] = deriveEncoder[Root]
+  given Decoder[Root] = deriveDecoder[Root]

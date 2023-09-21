@@ -69,7 +69,6 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
         _          <- IO.println(s"Decrypted Message: $decMsg")
         _          <- generateQRCode(s"${ncf.did}", userDir / "DID_Me" / s"$arg.png")
 
-
       // _ <- IO.println(s"Your Public: ${getPublicKeyFromBase64(publicKey.getOrElse(""))}")
       yield ()
     }
