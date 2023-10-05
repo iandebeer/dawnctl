@@ -28,6 +28,8 @@ import DIDOps.*
 
 import org.typelevel.vault.Key
 import com.nimbusds.jose.jwk.JWKSet
+import cats.data.EitherT
+import scala.io.StdIn.readLine
 
 object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your DWN Context"):
 
@@ -45,6 +47,25 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
   |  --help
   |    This help information
   """
+  def getUserInput: IO[Int] = IO {
+      val input = readLine(prompt)
+      input.toInt
+    }
+
+   def getChannelType: IO[ChannelType] =
+      val valid = List(1, 2, 3, 4, 5, 6)
+      for {
+        _ <- IO.println("Select a chat agent: \n 1. Slack \n 2. WhatsApp \n 3. Signal \n 4. Telegram \n 5. Email \n 6. SMS  ")
+     //   _ <- IO.print(prompt)
+        input <- getUserInput
+        //_ <- handleUserInput(input)
+        c <- if (valid.contains(input)) 
+               IO(ChannelType.fromOrdinal(input -1))
+             else 
+              IO.println("Invalid input")
+              getChannelType
+         //input != 0) loop else IO.unit
+      } yield c
 
   val initCommand: Command[IO[Unit]] = Command(
     "init",
@@ -52,24 +73,39 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
   ) {
     val contextName = Opts.option[String]("context-name", "Context Name").withDefault(user)
     contextName.map { arg =>
+      val channel = for 
+             c <- getChannelType
+             _ <- IO.println(s"\nSelected Channel: ${c.toString()}}")
+           yield c
+      val x  = (for
+        _ <- EitherT.right(IO.println(s"\nInitializing your DWN Context for $arg"))
+        contextEntries <- EitherT(getContextEntries(arg))
+        _ <- EitherT.right(
+          IO.println(s"\nYour DWN Context for $arg created at: $contextFilePath"))
+        channelType <- EitherT.right(channel)
+
+        ncf            <- EitherT(addNewContext(arg, contextEntries, channelType))
+        _          <- EitherT.right(IO.println(s"\nYour DWN Context has been initialized for $arg with DID: ${ncf.did}"))
+        privateKey <- EitherT(getPrivateKey(arg, "password"))
+        publicKey  <- EitherT(getPublicKey(contextFilePath, arg))
+        pk         <- EitherT.fromOption(publicKey, java.lang.Error("Invalid Private Key"))
+        encMsg     <- EitherT(encryptMessage("Hello World!", pk))
+        _          <- EitherT.rightT(println(s"\nEncrypted Message: \n$encMsg"))
+        sig <- EitherT(signMessage(encMsg, privateKey))
+        _          <- EitherT.rightT(println(s"\nSignature: \n$sig"))
+        valMsg <- EitherT(validateSignature(sig, pk))
+        msg <- EitherT(decryptMessage(valMsg, privateKey))
+        _         <- EitherT.rightT(println(s"\nDecrypted Verified Message: \n$msg"))
+   
+      yield ())
+
+     
       for
-        contextEntries <- getContextEntries(arg)
-        ncf            <- updateContextEntries(arg, contextEntries)
-        _              <- IO.pure(os.write.over(
-                            contextFilePath,
-                            contextEntries.copy(entries = contextEntries.entries + (arg -> ncf)).asJson.spaces2
-                          ))
-
-        _          <- IO.println(s"Your DWN Context has been initialized for $arg with DID: ${ncf.did}")
-        privateKey <- getPrivateKey(keyStorePath, arg, "password")
-        publicKey  <- getPublicKey(contextFilePath, arg)
-        encMsg     <- publicKey.map(pk => encryptMessage("Hello World", pk)).getOrElse(IO.pure(""))
-        _          <- IO.println(s"Encrypted Message: $encMsg")
-        decMsg     <- decryptMessage(encMsg, privateKey)
-        _          <- IO.println(s"Decrypted Message: $decMsg")
-        _          <- generateQRCode(s"${ncf.did}", userDir / "DID_Me" / s"$arg.png")
-
-      // _ <- IO.println(s"Your Public: ${getPublicKeyFromBase64(publicKey.getOrElse(""))}")
+        y <- x.value
+        _  <- y match
+          case Left(err) => IO.println(s"Error: $err")
+          case Right(_)  => IO.println(s"\nYour DWN Context has been initialized for $arg")
+        
       yield ()
     }
   }
@@ -78,10 +114,8 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
     val contextName = Opts.option[String]("context-name", "Context Name").withDefault(user)
     contextName.map { arg =>
       for
-        contextEntries <- getContextEntries(arg)
-        ncf            <- updateContextEntries(arg, ContextEntries(contextEntries.entries - arg))
-        _              <- IO.pure(os.write.over(contextFilePath, ncf.asJson.spaces2))
-        _              <- IO.println(s"Your DWN Context for $arg has been deleted")
+        ncf <- deleteContextEntries(arg)
+        _   <- IO.println(s"Your DWN Context for $arg has been deleted")
       yield ()
     }
   }

@@ -29,7 +29,7 @@ package object didx:
           "https://api.twilio.com/2010-04)-01/Accounts/ACXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX/Messages.json"
         ))
     def fromString(s: String): Either[Throwable, ChannelType] =
-      s match
+      s.split(":").head match
         case "slack"    => Right(Slack)
         case "whatsapp" => Right(WhatsApp)
         case "signal"   => Right(Signal)
@@ -39,12 +39,12 @@ package object didx:
         case _          => Left(new Exception("Invalid Channel Type"))
     override def toString(): String                           =
       this match
-        case Slack    => "slack"
-        case WhatsApp => "whatsapp"
-        case Signal   => "signal"
-        case Telegram => "telegram"
-        case Email    => "email"
-        case SMS      => "sms"
+        case Slack    => s"slack: $agent"
+        case WhatsApp => s"whatsapp: $agent"
+        case Signal   => s"signal: $agent"
+        case Telegram => s"telegram: $agent"
+        case Email    => s"email: $agent"
+        case SMS      => s"sms: $agent"
 
   case class Channels(channel: String, channelDid: String)
   given Encoder[Channels] = deriveEncoder[Channels]
@@ -67,9 +67,11 @@ package object didx:
   given Decoder[KeyPairs] = deriveDecoder[KeyPairs]
   case class ContextEntry(
     did: String,
+    didKey: Option[String] = None,
     keyStorePath: Option[String] = None,
     publicKey: Option[String] = None,
-    keypair: Option[KeyPair] = None
+    keypair: Option[KeyPair] = None,
+    channel: Option[String] = None
   )
 
   given Encoder[ContextEntry] = deriveEncoder[ContextEntry]

@@ -28,3 +28,5 @@ build/
 meta.json
 metals.sbt
 project/project
+.config
+DID_Me
