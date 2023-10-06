@@ -47,25 +47,27 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
   |  --help
   |    This help information
   """
-  def getUserInput: IO[Int] = IO {
-      val input = readLine(prompt)
-      input.toInt
-    }
+  def getUserInput: IO[Int]   = IO {
+    val input = readLine(prompt)
+    input.toInt
+  }
 
-   def getChannelType: IO[ChannelType] =
-      val valid = List(1, 2, 3, 4, 5, 6)
-      for {
-        _ <- IO.println("Select a chat agent: \n 1. Slack \n 2. WhatsApp \n 3. Signal \n 4. Telegram \n 5. Email \n 6. SMS  ")
-     //   _ <- IO.print(prompt)
-        input <- getUserInput
-        //_ <- handleUserInput(input)
-        c <- if (valid.contains(input)) 
-               IO(ChannelType.fromOrdinal(input -1))
-             else 
-              IO.println("Invalid input")
-              getChannelType
-         //input != 0) loop else IO.unit
-      } yield c
+  def getChannelType: IO[ChannelType] =
+    val valid = List(1, 2, 3, 4, 5, 6)
+    for {
+      _     <- IO.println(
+                 "Select a chat agent: \n 1. Slack \n 2. WhatsApp \n 3. Signal \n 4. Telegram \n 5. Email \n 6. SMS  "
+               )
+      //   _ <- IO.print(prompt)
+      input <- getUserInput
+      // _ <- handleUserInput(input)
+      c     <- if (valid.contains(input))
+                 IO(ChannelType.fromOrdinal(input - 1))
+               else
+                 IO.println("Invalid input")
+                 getChannelType
+      // input != 0) loop else IO.unit
+    } yield c
 
   val initCommand: Command[IO[Unit]] = Command(
     "init",
@@ -73,39 +75,42 @@ object DawnCtl extends CommandIOApp("dawnctl", "A command-line interface to your
   ) {
     val contextName = Opts.option[String]("context-name", "Context Name").withDefault(user)
     contextName.map { arg =>
-      val channel = for 
-             c <- getChannelType
-             _ <- IO.println(s"\nSelected Channel: ${c.toString()}}")
-           yield c
-      val x  = (for
-        _ <- EitherT.right(IO.println(s"\nInitializing your DWN Context for $arg"))
-        contextEntries <- EitherT(getContextEntries(arg))
-        _ <- EitherT.right(
-          IO.println(s"\nYour DWN Context for $arg created at: $contextFilePath"))
-        channelType <- EitherT.right(channel)
+      val channel =
+        for
+          c <- getChannelType
+          _ <- IO.println(s"\nSelected Channel: ${c.toString()}}")
+        yield c
+      val x       =
+        for
+          _              <- EitherT.right(IO.println(s"\nInitializing your DWN Context for $arg"))
+          contextEntries <- EitherT(getContextEntries(arg))
+          _              <- EitherT.right(
+                              IO.println(s"\nYour DWN Context for $arg created at: $contextFilePath")
+                            )
+          channelType    <- EitherT.right(channel)
 
-        ncf            <- EitherT(addNewContext(arg, contextEntries, channelType))
-        _          <- EitherT.right(IO.println(s"\nYour DWN Context has been initialized for $arg with DID: ${ncf.did}"))
-        privateKey <- EitherT(getPrivateKey(arg, "password"))
-        publicKey  <- EitherT(getPublicKey(contextFilePath, arg))
-        pk         <- EitherT.fromOption(publicKey, java.lang.Error("Invalid Private Key"))
-        encMsg     <- EitherT(encryptMessage("Hello World!", pk))
-        _          <- EitherT.rightT(println(s"\nEncrypted Message: \n$encMsg"))
-        sig <- EitherT(signMessage(encMsg, privateKey))
-        _          <- EitherT.rightT(println(s"\nSignature: \n$sig"))
-        valMsg <- EitherT(validateSignature(sig, pk))
-        msg <- EitherT(decryptMessage(valMsg, privateKey))
-        _         <- EitherT.rightT(println(s"\nDecrypted Verified Message: \n$msg"))
-   
-      yield ())
+          ncf        <- EitherT(addNewContext(arg, contextEntries, channelType))
+          _          <- EitherT.right(IO.println(s"\nYour DWN Context has been initialized for $arg with DID: ${ncf.did}"))
+          privateKey <- EitherT(getPrivateKey(arg, "password"))
+          publicKey  <- EitherT(getPublicKey(contextFilePath, arg))
+          pk         <- EitherT.fromOption(publicKey, java.lang.Error("Invalid Private Key"))
 
-     
+          // test encryption and signing
+
+          encMsg <- EitherT(encryptMessage("Hello World!", pk))
+          _      <- EitherT.rightT(println(s"\nEncrypted Message: \n$encMsg"))
+          sig    <- EitherT(signMessage(encMsg, privateKey))
+          _      <- EitherT.rightT(println(s"\nSignature: \n$sig"))
+          valMsg <- EitherT(validateSignature(sig, pk))
+          msg    <- EitherT(decryptMessage(valMsg, privateKey))
+          _      <- EitherT.rightT(println(s"\nDecrypted Verified Message: \n$msg"))
+        yield ()
+
       for
         y <- x.value
-        _  <- y match
-          case Left(err) => IO.println(s"Error: $err")
-          case Right(_)  => IO.println(s"\nYour DWN Context has been initialized for $arg")
-        
+        _ <- y match
+               case Left(err) => IO.println(s"Error: $err")
+               case Right(_)  => IO.println(s"\nYour DWN Context has been initialized for $arg")
       yield ()
     }
   }

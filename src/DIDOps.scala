@@ -17,25 +17,48 @@ import cats.effect.IO
 import sttp.client3.asynchttpclient.cats.AsyncHttpClientCatsBackend
 import sttp.client3.circe.*
 import cats.data.EitherT
-
+import java.security.PublicKey
 
 object DIDOps:
- /*  def generateDid(alias: String): IO[Either[Error, (String, String)]] =
-    (for
-      keyStore    <- EitherT(getKeyStore("password", keyStorePath))
-      keyPair     <- EitherT(createKeyPairRSA())
-      certificate <- EitherT(createSelfSignedCertificate(alias))
-      _           <- EitherT(storeCertificate(keyStore, certificate, alias, "password".toArray[Char]))
+  def makeDidKey(pubKey: PublicKey, kty: String, crv: String): Option[String] =
+    val algo = (kty, crv) match
+      case ("EC", "P-256") => "zDn"
+      case ("EC", "P-384") => "z82"
+      case ("EC", "P-521") => "z2J9"
+      case _               => ""
+    val key  = pubKey.getEncoded() match
+      case x: Array[Byte] => Some(encodeToBase58(x))
+      case null           => None
+    (algo, key) match
+      case (a, Some(k)) => Some(s"did:key:$a$k")
+      case _            => None
 
-      kp   <- EitherT(createKeyPair(alias))
-      _    <- EitherT(storePrivateKey(keyStore, kp, alias, "password", certificate))
-      root <- EitherT(createDWN(dwnUrl, s"did:key:${kp.computeThumbprint().toString()}"))
-      did   = root.tenant.tenantId.dwnDidEquivalent
-      kSet  = new JWKSet(kp).toPublicJWKSet().toString()
-    // _    <- IO.println(s"Your DID is: $did")
+  val alphabetBase58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
-    // _  <- storePublicKey(contextFilePath, alias, kp.getPublic().toString())
-    yield (did, kSet)).value */
+  val idxToChar = Map(alphabetBase58.zipWithIndex.map(_.swap): _*)
+
+  val charToIdx = Map(alphabetBase58.zipWithIndex: _*)
+
+  def encodeToBase58(array: Array[Byte]): String =
+    (LazyList.fill(array.takeWhile(_ == 0).length)(1.toByte) ++ LazyList
+      .unfold(
+        BigInt(0.toByte +: array)
+      )(n => if (n == 0) None else Some((n /% 58).swap))
+      .map(_.toInt)
+      .reverse
+      .map(x => idxToChar(x))).mkString
+
+  def decodeFromBase58(b58: String): Array[Byte] = {
+    val zeroCount = b58.takeWhile(_ == '1').length
+    Array.fill(zeroCount)(0.toByte) ++
+      b58
+        .drop(zeroCount)
+        .map(charToIdx)
+        .toList
+        .foldLeft(BigInt(0))((acc, x) => acc * 58 + x)
+        .toByteArray
+        .dropWhile(_ == 0.toByte)
+  }
 
   def fetchDID(alias: String): IO[Either[Throwable, String]] =
     for
